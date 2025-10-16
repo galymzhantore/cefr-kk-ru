@@ -1,112 +1,114 @@
-# Kazakh → Russian CEFR Pipeline (Word & Text)
+# Пайплайн CEFR для казахско‑русских текстов
 
-This repository provides a **clean, working prototype** that:
-1. Translates Kazakh text → Russian.
-2. Aligns Kazakh words/phrases to Russian words (phrase-aware).
-3. Maps Russian words to **CEFR levels (A1–C2)** and assigns word-level difficulty to Kazakh words.
-4. Aggregates word scores to estimate **text-level CEFR**.
-5. (Optional) Trains a **Kazakh word-level CEFR classifier** from silver labels.
+Проект решает задачу оценки сложности текста (CEFR A1–C2) для казахского языка по параллельному переводу на русский. Пайплайн включает перевод, выравнивание слов/фраз, сопоставление с уровнем CEFR и агрегацию на уровне текста. Дополнительно можно обучить классификатор для словарного уровня CEFR.
 
-> Works out of the box with small sample data. Replace the sample Russian CEFR list with a larger one for real use.
+## Как быстро начать
 
-## Quickstart
-
-### 1) Conda (recommended)
+### 1. Установка окружения
+**Conda (рекомендуется):**
 ```bash
 conda env create -f environment.yml
 conda activate kazakh_cefr_env
 ```
 
-### 2) Or pip
+**pip / venv:**
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 3) Download parallel corpora (KazParC) to `data/parallel`
+### 2. Загрузка параллельного корпуса KazParC
 ```bash
 python -m src.data.download_parallel
 ```
+Команда сохранит файл `data/parallel/kazparc_kz_ru.csv` и вернет путь к нему.
 
-### 4) Build silver labels from sample parallel pairs
+### 3. Построение «серебряных» CEFR-меток
 ```bash
 python -m src.pipeline.build_silver_labels
 ```
+В результате появится файл `data/labels/silver_word_labels.csv` с парами «казахская фраза → русский перевод → уровень CEFR».
 
-### 5) Run end-to-end demo (CLI)
+### 4. Прогон пайплайна через CLI
 ```bash
 python run_pipeline.py --text "Ол кітап оқып жатыр"
 ```
+На выходе: перевод, распределение уровней CEFR и список выровненных фраз.
 
-You should see:
-- Russian translation
-- Phrase alignments (e.g., "оқып жатыр" → "читает")
-- CEFR levels per word/phrase
-- Text-level CEFR estimate
+### 5. Jupyter-ноутбук
+В папке `notebooks/` создайте (или обновите) файл `cefr_pipeline_demo.ipynb` содержимым из `main.ipynb`. Ноутбук выполняет все шаги пайплайна в среде Colab/Kaggle или локально, используя GPU при наличии.
 
-### 6) Optional: Fine-tune awesome-align on Kazakh–Russian
-Format a file `data/parallel/train.kazru` with lines: `kazakh ||| russian`, then:
-```bash
-bash scripts/train_align.sh
-bash scripts/align_infer.sh  # produces word links
-```
+## Что происходит внутри
 
-### 7) Optional: Train word-level classifier (Kazakh)
-After building `data/labels/silver_word_labels.csv`:
-```bash
-python -m src.models.train_word
-```
+1. **Перевод** — `src/translation/translator.py` оборачивает модель `issai/tilmash`. Кэширование позволяет загружать модель один раз.
+2. **Выранивание** — `src/align/mutual_align.py` формирует взаимные соответствия слов через `aneuraz/awesome-align-with-co`. Класс `EmbeddingAligner` поддерживает CPU и GPU.
+3. **Сборка фраз** — `src/align/merge_phrases.py` объединяет соседние казахские токены, выровненные с одним русским словом, и возвращает `PhraseAlignment`.
+4. **Доменные сервисы** — `src/domain/services.py` реализует `TextCefrPipeline`, который объединяет перевод, выравнивание и скоринг CEFR. Возвращаемый объект `TextCefrPrediction` содержит результат и удобен для сериализации.
+5. **Работа с ресурсами** — `src/data/repositories.py` лениво загружает словарь «русское слово → уровень CEFR», чтобы избежать повторного чтения CSV.
+6. **Серебряные метки** — `src/pipeline/build_silver_labels.py` запускает пайплайн на параллельном корпусе, дополнительно приводит русские слова к нормальной форме через `pymorphy3`.
 
----
+## Настройка и GPU
 
-## Repo Layout
+- Все модули автоматически переходят на CUDA, если `torch.cuda.is_available()` возвращает `True`. При необходимости можно явно передать `device="cuda"` в `EmbeddingAligner` и `get_translator`.
+- Длинные предложения автоматически пропускаются с предупреждением, чтобы избежать превышения лимита в 512 токенов у BERT.
+
+## Обучение и дообучение
+
+1. **Выравнивание (awesome-align)**  
+   - Сформируйте файл `data/parallel/train.kazru` с строками вида `kazakh ||| russian`.  
+   - Запустите  
+     ```bash
+     bash scripts/train_align.sh
+     bash scripts/align_infer.sh
+     ```  
+     Это улучшит качество выравнивания и, как следствие, точность CEFR-оценки.
+
+2. **Классификатор словарных уровней**  
+   - После генерации `data/labels/silver_word_labels.csv` выполните:  
+     ```bash
+     python -m src.models.train_word
+     ```  
+   - Модель `kz-transformers/kaz-roberta-conversational` дообучается на «серебряных» метках; результаты сохраняются в `models/word_cefr/`.
+
+3. **Эксперименты**  
+   - Увеличьте размер русско-CEFR словаря (`data/cefr/russian_cefr_sample.csv`), заменив его на собственный большой список.  
+   - Настройте гиперпараметры в `src/domain/services.py` (слои BERT, пороги выравнивания) для лучшего баланса между покрытием и точностью.  
+   - Добавьте собственные метрики и отчеты, интегрировав сервисы пайплайна в ваш продукт.
+
+## Структура проекта
+
 ```
 data/
-  sample_parallel.csv
-  cefr/russian_cefr_sample.csv
-  parallel/              # downloaded corpora (KazParC etc.)
-  labels/                # generated silver labels
+  cefr/                        # словари CEFR
+  parallel/                    # параллельные корпуса
+  labels/                      # сгенерированные серебряные метки
 models/
-  word_cefr/             # fine-tuned classifier will be saved here
-  text_cefr/
+  word_cefr/                   # сохраненные веса классификаторов
+notebooks/
+  cefr_pipeline_demo.ipynb     # jupyter-скрипт для полного пайплайна
 scripts/
-  train_align.sh
-  align_infer.sh
+  train_align.sh               # обучение awesome-align
+  align_infer.sh               # применение выравнителя
 src/
-  __init__.py
-  align/
-    __init__.py
-    mutual_align.py
-    merge_phrases.py
-  data/
-    __init__.py
-    download_parallel.py
-  pipeline/
-    __init__.py
-    build_silver_labels.py
-  models/
-    __init__.py
-    train_word.py
-    predict_word.py
-  text/
-    __init__.py
-    predict_text.py
-  translation/
-    __init__.py
-    translator.py
-  utils.py
-run_pipeline.py
-tests/
-  smoke_test.py
+  align/                       # выравнивание и слияние фраз
+  data/                        # загрузка данных и репозитории
+  domain/                      # доменные сущности и сервисы
+  models/                      # обучение и инференс классификатора
+  pipeline/                    # построение серебряных меток
+  text/                        # текстовый CEFR-предиктор
+  translation/                 # обертка над моделью перевода
+run_pipeline.py                # CLI-пример
+tests/                         # smoke-тесты
 ```
 
-## Notes
-- **Translation model:** `deepvk/kazRush-kk-ru` (HuggingFace).
-- **Alignment (default in code):** mutual-soft alignment over mBERT embeddings (phrase merge).
-  - You can switch to `awesome-align` via scripts for higher accuracy.
-- **Russian CEFR list:** sample CSV provided. Replace with a larger curated list.
-- **GPU:** If you have CUDA, edit `environment.yml` (remove `cpuonly`) and set a proper `cudatoolkit` version.
+## Что можно улучшить
 
-## License
-For research purposes. Respect licenses of models and datasets you use.
+- **Расширение корпусов** — подключите дополнительные параллельные источники или собственные наборы данных.
+- **Собственные словари** — обогащайте русско-CEFR словарь полноразмерными леммами или вручную размеченными данными.
+- **Автовalidation** — добавьте pytest с моками для сервисов (`TranslationService`, `AlignmentService`) и интеграционные тесты для пайплайна.
+- **Интерфейс** — заверните `TextCefrPipeline` в REST/CLI-сервис или интерфейс на Streamlit/Gradio.
+
+## Лицензия
+
+Проект предназначен для исследовательских целей. Соблюдайте лицензии используемых моделей, датасетов и внешних сервисов.
