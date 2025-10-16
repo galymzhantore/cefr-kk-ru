@@ -19,6 +19,8 @@ def predict_text_cefr(
     rus_cefr_path: str | Path = DEFAULT_RUS_CEFR,
     translator: Translator | None = None,
     aligner: EmbeddingAligner | None = None,
+    *,
+    russian_text: str | None = None,
 ) -> TextCefrPrediction:
     translation_service = TranslationService(translator)
     alignment_service = AlignmentService(aligner)
@@ -28,4 +30,4 @@ def predict_text_cefr(
         alignment_service=alignment_service,
         scorer=scorer,
     )
-    return pipeline.predict(kaz_text)
+    return pipeline.predict(kaz_text, russian_text=russian_text)

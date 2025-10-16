@@ -23,9 +23,13 @@ class TranslationService:
     """Facade over the HuggingFace translation pipeline."""
 
     def __init__(self, translator: Translator | None = None) -> None:
-        self._translator = translator or get_translator()
+        self._translator: Translator | None = translator
 
-    def translate(self, text: str) -> str:
+    def translate(self, text: str, *, override: str | None = None) -> str:
+        if override is not None:
+            return override
+        if self._translator is None:
+            self._translator = get_translator()
         return self._translator.translate(text)
 
 
@@ -121,8 +125,8 @@ class TextCefrPipeline:
             scorer = CefrScorer(RussianCefrRepository())
         self._scorer = scorer
 
-    def predict(self, kazakh_text: str) -> TextCefrPrediction:
-        translation = self._translation.translate(kazakh_text)
+    def predict(self, kazakh_text: str, *, russian_text: str | None = None) -> TextCefrPrediction:
+        translation = self._translation.translate(kazakh_text, override=russian_text)
         kazakh_words = _tokenize(kazakh_text)
         russian_words = _tokenize(translation)
         alignments = self._alignment.align_phrases(kazakh_words, russian_words)
