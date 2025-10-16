@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import namedtuple
 from pathlib import Path
+from functools import lru_cache
 
 import inspect
 
@@ -30,6 +31,12 @@ RUS_CEFR = DEFAULT_RUS_CEFR
 OUT_CSV = Path("data/labels/silver_word_labels.csv")
 
 morph = pymorphy.MorphAnalyzer()
+
+
+@lru_cache(maxsize=1_000_000)
+def _lemmatize(token: str) -> str:
+    parsed = morph.parse(token)[0]
+    return parsed.normal_form
 
 
 def ensure_dir(path: Path) -> None:
@@ -70,10 +77,9 @@ def main(
             skipped_sequences += 1
             continue
         for phrase in phrases:
-            lemma = morph.parse(phrase.russian_token.lower())[0].normal_form
-            level = mapping.get(
-                lemma, mapping.get(phrase.russian_token.lower(), "Unknown")
-            )
+            token = phrase.russian_token.strip().lower()
+            lemma = _lemmatize(token)
+            level = mapping.get(lemma, mapping.get(token, "Unknown"))
             rows.append(
                 {
                     "kaz_item": phrase.kazakh_phrase,
