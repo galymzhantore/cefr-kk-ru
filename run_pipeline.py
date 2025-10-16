@@ -5,13 +5,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--text", required=True, help="Kazakh text")
     args = ap.parse_args()
-    out = predict_text_cefr(args.text)
-    print("Translation:", out["translation"])
-    print("Text CEFR:", out["avg_level"])
-    print("Distribution:", out["distribution"])
+    result = predict_text_cefr(args.text)
+    print("Translation:", result.translation)
+    print("Text CEFR:", result.average_level)
+    print("Distribution:", result.distribution)
     print("Phrase alignments (KZ → RU):")
-    for kz_phrase, ru_word, _, _ in out["phrases"]:
-        print(f'  "{kz_phrase}" -> "{ru_word}"')
+    for phrase in result.phrase_alignments:
+        print(f'  "{phrase.kazakh_phrase}" -> "{phrase.russian_token}"')
 
 if __name__ == "__main__":
     main()
