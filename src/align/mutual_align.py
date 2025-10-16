@@ -1,52 +1,151 @@
 # src/align/mutual_align.py
-from typing import List, Set, Tuple
+from __future__ import annotations
+
 from collections import defaultdict
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Iterable, List, Sequence, Set, Tuple
+
 import torch
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
 
 # Use the awesome-align checkpoint (mBERT fine-tuned for alignment)
 MODEL_NAME = "aneuraz/awesome-align-with-co"  # or "bert-base-multilingual-cased" as a fallback
-_tok = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
-_mdl = AutoModel.from_pretrained(MODEL_NAME)
-_mdl.eval()
-_device = "cuda" if torch.cuda.is_available() else "cpu"
-_mdl.to(_device)
 
-def _tokenize_words(words: List[str]):
-    enc = _tok(words, is_split_into_words=True, return_tensors="pt", return_attention_mask=True)
-    word_ids = enc.word_ids(0)
-    for k in enc:
-        enc[k] = enc[k].to(_device)
-    return enc, word_ids
 
-def _layer_hs(enc, layer: int = 8):
-    with torch.no_grad():
-        out = _mdl(**enc, output_hidden_states=True)
-    return out.hidden_states[layer].squeeze(0)  # [T,H]
+@dataclass(frozen=True)
+class AlignmentResources:
+    """Container for resources required to run mutual alignment."""
 
-def _pool_words(hs, word_ids: List[int]):
-    buckets = defaultdict(list)
-    for i, wid in enumerate(word_ids):
-        if wid is None:  # specials
-            continue
-        buckets[wid].append(hs[i])
-    keep = sorted(buckets.keys())
-    reps = torch.stack([torch.stack(buckets[k]).mean(0) for k in keep])
-    return reps, keep
+    tokenizer: PreTrainedTokenizerBase
+    model: PreTrainedModel
+    device: torch.device
 
-def mutual_soft_align(kz_words: List[str], ru_words: List[str], layer:int=8, thresh:float=0.05) -> Set[Tuple[int,int]]:
-    kz_enc, kz_wids = _tokenize_words(kz_words)
-    ru_enc, ru_wids = _tokenize_words(ru_words)
-    kz_hs = _layer_hs(kz_enc, layer)
-    ru_hs = _layer_hs(ru_enc, layer)
-    kz_rep, kz_keep = _pool_words(kz_hs, kz_wids)
-    ru_rep, ru_keep = _pool_words(ru_hs, ru_wids)
-    sim = kz_rep @ ru_rep.T
-    p_rgk = torch.softmax(sim, -1)
-    p_kgr = torch.softmax(sim, -2)
-    links = set()
-    for i in range(p_rgk.size(0)):
-        for j in range(p_rgk.size(1)):
-            if p_rgk[i, j] > thresh and p_kgr[i, j] > thresh:
-                links.add((kz_keep[i], ru_keep[j]))
-    return links
+
+def _resolve_device(device: str | torch.device | None) -> torch.device:
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    return torch.device(device)
+
+
+@lru_cache(maxsize=4)
+def _load_alignment_resources(
+    model_name: str = MODEL_NAME, device: str | torch.device | None = None
+) -> AlignmentResources:
+    resolved_device = _resolve_device(device)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    model = AutoModel.from_pretrained(model_name)
+    model.eval()
+    model.to(resolved_device)
+    return AlignmentResources(tokenizer=tokenizer, model=model, device=resolved_device)
+
+
+class EmbeddingAligner:
+    """Mutual soft alignment over contextual embeddings with optional caching."""
+
+    def __init__(
+        self,
+        model_name: str = MODEL_NAME,
+        device: str | torch.device | None = None,
+        resources: AlignmentResources | None = None,
+    ) -> None:
+        if resources is None:
+            resources = _load_alignment_resources(model_name=model_name, device=device)
+        self.tokenizer = resources.tokenizer
+        self.model = resources.model
+        self.device = resources.device
+
+    def align(
+        self,
+        kz_words: Sequence[str],
+        ru_words: Sequence[str],
+        layer: int = 8,
+        thresh: float = 0.05,
+    ) -> Set[Tuple[int, int]]:
+        kz_enc, kz_wids = self._tokenize_words(kz_words)
+        ru_enc, ru_wids = self._tokenize_words(ru_words)
+        kz_hs = self._layer_hs(kz_enc, layer)
+        ru_hs = self._layer_hs(ru_enc, layer)
+        kz_rep, kz_keep = self._pool_words(kz_hs, kz_wids)
+        ru_rep, ru_keep = self._pool_words(ru_hs, ru_wids)
+        if kz_rep.numel() == 0 or ru_rep.numel() == 0:
+            return set()
+        sim = kz_rep @ ru_rep.T
+        p_rgk = torch.softmax(sim, -1)
+        p_kgr = torch.softmax(sim, -2)
+        links: Set[Tuple[int, int]] = set()
+        for i in range(p_rgk.size(0)):
+            for j in range(p_rgk.size(1)):
+                if p_rgk[i, j] > thresh and p_kgr[i, j] > thresh:
+                    links.add((kz_keep[i], ru_keep[j]))
+        return links
+
+    def _tokenize_words(self, words: Sequence[str]):
+        enc = self.tokenizer(
+            list(words),
+            is_split_into_words=True,
+            return_tensors="pt",
+            return_attention_mask=True,
+        )
+        word_ids = enc.word_ids(0)
+        for key, value in list(enc.items()):
+            if isinstance(value, torch.Tensor):
+                enc[key] = value.to(self.device)
+        return enc, word_ids
+
+    def _layer_hs(self, enc, layer: int = 8):
+        with torch.no_grad():
+            out = self.model(**enc, output_hidden_states=True)
+        return out.hidden_states[layer].squeeze(0)  # [T,H]
+
+    @staticmethod
+    def _pool_words(hs, word_ids: Iterable[int | None]):
+        buckets = defaultdict(list)
+        for i, wid in enumerate(word_ids):
+            if wid is None:  # specials
+                continue
+            buckets[wid].append(hs[i])
+        keep = sorted(buckets.keys())
+        if not keep:
+            return torch.empty((0, hs.size(-1)), device=hs.device), keep
+        reps = torch.stack([torch.stack(buckets[k]).mean(0) for k in keep])
+        return reps, keep
+
+
+_default_aligner: EmbeddingAligner | None = None
+
+
+def get_default_aligner() -> EmbeddingAligner:
+    global _default_aligner
+    if _default_aligner is None:
+        _default_aligner = EmbeddingAligner()
+    return _default_aligner
+
+
+def reset_default_aligner() -> None:
+    """Reset the cached aligner (mainly for tests)."""
+
+    global _default_aligner
+    _default_aligner = None
+
+
+def mutual_soft_align(
+    kz_words: Sequence[str],
+    ru_words: Sequence[str],
+    layer: int = 8,
+    thresh: float = 0.05,
+    aligner: EmbeddingAligner | None = None,
+) -> Set[Tuple[int, int]]:
+    """Backward-compatible helper around :class:`EmbeddingAligner`."""
+
+    if aligner is None:
+        aligner = get_default_aligner()
+    return aligner.align(kz_words, ru_words, layer=layer, thresh=thresh)
+
+
+__all__ = [
+    "EmbeddingAligner",
+    "mutual_soft_align",
+    "get_default_aligner",
+    "reset_default_aligner",
+]
