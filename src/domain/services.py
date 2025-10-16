@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from collections import Counter
 from typing import Mapping, Sequence
+import warnings
 
 from src.align.merge_phrases import merge_kz_to_single_ru
-from src.align.mutual_align import EmbeddingAligner, get_default_aligner
+from src.align.mutual_align import (
+    EmbeddingAligner,
+    SequenceTooLongError,
+    get_default_aligner,
+)
 from src.domain.entities import CEFR_ORDER, PhraseAlignment, TextCefrPrediction
 from src.data.repositories import RussianCefrRepository
 from src.translation.translator import Translator, get_translator
@@ -46,12 +51,20 @@ class AlignmentService:
         layer: int | None = None,
         threshold: float | None = None,
     ) -> list[PhraseAlignment]:
-        links = self._aligner.align(
-            kazakh_words,
-            russian_words,
-            layer=layer if layer is not None else self._layer,
-            thresh=threshold if threshold is not None else self._threshold,
-        )
+        try:
+            links = self._aligner.align(
+                kazakh_words,
+                russian_words,
+                layer=layer if layer is not None else self._layer,
+                thresh=threshold if threshold is not None else self._threshold,
+            )
+        except SequenceTooLongError as exc:
+            warnings.warn(
+                f"Skipping alignment for sequence exceeding max length: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return []
         return merge_kz_to_single_ru(kazakh_words, russian_words, links)
 
 

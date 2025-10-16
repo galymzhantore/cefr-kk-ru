@@ -47,12 +47,16 @@ def main(
     )
 
     rows: list[dict[str, str]] = []
+    skipped_sequences = 0
     for sample in df.itertuples(index=False):
         kz = str(getattr(sample, "kaz")).strip()
         ru = str(getattr(sample, "rus")).strip()
         kz_words = tuple(part for part in kz.split() if part)
         ru_words = tuple(part for part in ru.split() if part)
         phrases = alignment_service.align_phrases(kz_words, ru_words)
+        if not phrases:
+            skipped_sequences += 1
+            continue
         for phrase in phrases:
             lemma = morph.parse(phrase.russian_token.lower())[0].normal_form
             level = mapping.get(
@@ -71,7 +75,7 @@ def main(
     output_df = pd.DataFrame(rows, columns=["kaz_item", "rus_item", "cefr", "kaz_sent", "rus_sent"])
     output_df.to_csv(out_csv, index=False, encoding="utf-8")
 
-    print(f"Saved: {out_csv} rows={len(rows)}")
+    print(f"Saved: {out_csv} rows={len(rows)} skipped_sentences={skipped_sequences}")
     return out_csv
 
 

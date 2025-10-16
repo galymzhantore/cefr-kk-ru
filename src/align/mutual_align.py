@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterable, List, Sequence, Set, Tuple
+from typing import Iterable, Sequence, Set, Tuple
 
 import torch
 from transformers import AutoModel, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase
@@ -40,6 +40,10 @@ def _load_alignment_resources(
     return AlignmentResources(tokenizer=tokenizer, model=model, device=resolved_device)
 
 
+class SequenceTooLongError(RuntimeError):
+    """Raised when tokenized sequences exceed the model maximum length."""
+
+
 class EmbeddingAligner:
     """Mutual soft alignment over contextual embeddings with optional caching."""
 
@@ -54,6 +58,10 @@ class EmbeddingAligner:
         self.tokenizer = resources.tokenizer
         self.model = resources.model
         self.device = resources.device
+        max_len = getattr(self.tokenizer, "model_max_length", 512)
+        if max_len is None or max_len <= 0 or max_len > 512:
+            max_len = 512
+        self.max_length = int(max_len)
 
     def align(
         self,
@@ -62,8 +70,13 @@ class EmbeddingAligner:
         layer: int = 8,
         thresh: float = 0.05,
     ) -> Set[Tuple[int, int]]:
-        kz_enc, kz_wids = self._tokenize_words(kz_words)
-        ru_enc, ru_wids = self._tokenize_words(ru_words)
+        kz_enc, kz_wids, kz_truncated = self._tokenize_words(kz_words)
+        ru_enc, ru_wids, ru_truncated = self._tokenize_words(ru_words)
+        if kz_truncated or ru_truncated:
+            raise SequenceTooLongError(
+                f"Sequence exceeds maximum length ({self.max_length}) "
+                f"kz_truncated={kz_truncated} ru_truncated={ru_truncated}"
+            )
         kz_hs = self._layer_hs(kz_enc, layer)
         ru_hs = self._layer_hs(ru_enc, layer)
         kz_rep, kz_keep = self._pool_words(kz_hs, kz_wids)
@@ -86,12 +99,17 @@ class EmbeddingAligner:
             is_split_into_words=True,
             return_tensors="pt",
             return_attention_mask=True,
+            truncation=True,
+            max_length=self.max_length,
+            padding="longest",
         )
         word_ids = enc.word_ids(0)
+        max_word_id = max((wid for wid in word_ids if wid is not None), default=-1)
+        truncated = max_word_id < len(words) - 1
         for key, value in list(enc.items()):
             if isinstance(value, torch.Tensor):
                 enc[key] = value.to(self.device)
-        return enc, word_ids
+        return enc, word_ids, truncated
 
     def _layer_hs(self, enc, layer: int = 8):
         with torch.no_grad():
@@ -144,6 +162,7 @@ def mutual_soft_align(
 
 
 __all__ = [
+    "SequenceTooLongError",
     "EmbeddingAligner",
     "mutual_soft_align",
     "get_default_aligner",
