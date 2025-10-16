@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+from collections import namedtuple
 from pathlib import Path
+
+import inspect
+
+if not hasattr(inspect, "getargspec"):
+    ArgSpec = namedtuple("ArgSpec", "args varargs keywords defaults")
+
+    def _compat_getargspec(func):
+        full = inspect.getfullargspec(func)
+        return ArgSpec(full.args, full.varargs, full.varkw, full.defaults)
+
+    inspect.getargspec = _compat_getargspec  # type: ignore[attr-defined]
 
 import pandas as pd
 
