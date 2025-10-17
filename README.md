@@ -72,9 +72,16 @@ python run_pipeline.py --text_kz "Ол кітап оқып жатыр" --text_ru
 2. **Классификатор словарных уровней**  
    - После генерации `data/labels/silver_word_labels.csv` выполните:  
      ```bash
-     python -m src.models.train_word
+     python -m src.models.train_word_transformer
      ```  
-   - Модель `kz-transformers/kaz-roberta-conversational` дообучается на «серебряных» метках; результаты сохраняются в `models/word_cefr/`.
+   - По умолчанию используется компактный трансформер `cointegrated/rubert-tiny2`; веса и токенизатор сохраняются в `models/transformer_word_cefr/`.  
+   - Для инференса доступны хелперы:
+     ```python
+     from pathlib import Path
+     from src.models.predict_transformer_word import predict_transformer_word
+
+     predict_transformer_word("пример", model_dir=Path("models/transformer_word_cefr"))
+     ```
 
 3. **Эксперименты**  
    - Увеличьте размер русско-CEFR словаря (`data/cefr/russian_cefr_sample.csv`), заменив его на собственный большой список.  
@@ -89,7 +96,7 @@ data/
   parallel/                    # параллельные корпуса
   labels/                      # сгенерированные серебряные метки
 models/
-  word_cefr/                   # сохраненные веса классификаторов
+  transformer_word_cefr/       # сохраненные веса трансформер-классификатора
 notebooks/
   cefr_pipeline_demo.ipynb     # jupyter-скрипт для полного пайплайна
 scripts/
