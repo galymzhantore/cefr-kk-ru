@@ -70,8 +70,8 @@ def main(
     for sample in df.itertuples(index=False):
         kz = str(getattr(sample, "kaz")).strip()
         ru = str(getattr(sample, "rus")).strip()
-        kz_words = tuple(part for part in kz.split() if part)
-        ru_words = tuple(part for part in ru.split() if part)
+        kz_words = tuple(part for part in kz.split() if part) # (index, kaz_word)
+        ru_words = tuple(part for part in ru.split() if part) # (index, rus_word)
         phrases = alignment_service.align_phrases(kz_words, ru_words)
         if not phrases:
             skipped_sequences += 1

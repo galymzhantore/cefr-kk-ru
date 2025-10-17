@@ -21,3 +21,5 @@ dependencies:
       - awesome-align
       - simalign
       - python-dotenv
+      - pymorphy2
+      - pymorphy3
